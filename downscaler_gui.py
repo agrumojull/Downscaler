@@ -9,7 +9,7 @@ from PIL import Image, UnidentifiedImageError
 
 VALID_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 SUFFIX_RE = None
-SUPPORTED_TARGETS = (256, 128, 64)
+SUPPORTED_TARGETS = (512, 256, 128, 64)
 
 
 def is_image(path: Path) -> bool:
@@ -90,6 +90,9 @@ def process_image(src: Path, targets, log_q: queue.Queue, stop_evt: threading.Ev
             return
         if w == t:
             log_q.put(("SKIP", src, f"déjà en {t}x{t}"))
+            continue
+        if w < t:
+            log_q.put(("SKIP", src, f"trop petite ({w}x{w}) pour {t}x{t}"))
             continue
         try:
             with Image.open(src) as im:
