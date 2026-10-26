@@ -1,6 +1,9 @@
 import os
 import queue
+import socket
+import sys
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
@@ -10,6 +13,11 @@ from PIL import Image, UnidentifiedImageError
 VALID_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 SUFFIX_RE = None
 SUPPORTED_TARGETS = (512, 256, 128, 64)
+
+# Instance unique : le menu contextuel de l'explorateur lance un processus par
+# fichier sélectionné, les suivants transmettent leurs chemins au premier.
+IPC_PORT = 47821
+IPC_BANNER = b"DOWNSCALER_PSX_1\n"
 
 
 def is_image(path: Path) -> bool:
@@ -138,8 +146,66 @@ def worker(paths, targets, log_q, progress_q, done_evt, stop_evt):
     log_q.put(("__DONE__", None, f"Terminé : {ok} OK, {err} erreurs, {skip} skips, total {total}"))
 
 
+def start_ipc_server(ipc_q: queue.Queue):
+    """Devient l'instance principale si le port est libre. Retourne False sinon."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    try:
+        srv.bind(("127.0.0.1", IPC_PORT))
+        srv.listen(32)
+    except OSError:
+        srv.close()
+        return False
+
+    def serve():
+        while True:
+            try:
+                conn, _addr = srv.accept()
+            except OSError:
+                return
+            with conn:
+                try:
+                    conn.sendall(IPC_BANNER)
+                    conn.settimeout(5)
+                    chunks = []
+                    while True:
+                        data = conn.recv(65536)
+                        if not data:
+                            break
+                        chunks.append(data)
+                except OSError:
+                    continue
+            paths = b"".join(chunks).decode("utf-8", "replace").splitlines()
+            paths = [p for p in paths if p.strip()]
+            if paths:
+                ipc_q.put(paths)
+
+    threading.Thread(target=serve, daemon=True).start()
+    return True
+
+
+def send_to_running_instance(paths) -> bool:
+    for _ in range(20):
+        try:
+            with socket.create_connection(("127.0.0.1", IPC_PORT), timeout=2) as s:
+                banner = b""
+                while len(banner) < len(IPC_BANNER):
+                    data = s.recv(len(IPC_BANNER) - len(banner))
+                    if not data:
+                        break
+                    banner += data
+                if banner != IPC_BANNER:
+                    return False
+                s.sendall("\n".join(str(p) for p in paths).encode("utf-8"))
+            return True
+        except OSError:
+            time.sleep(0.1)
+    return False
+
+
 class DownscalerApp(tk.Tk):
-    def __init__(self):
+    def __init__(self, initial_sources=(), ipc_q=None):
         super().__init__()
         self.title("Downscaler PSX")
         self.geometry("780x560")
@@ -147,12 +213,15 @@ class DownscalerApp(tk.Tk):
 
         self.log_q = queue.Queue()
         self.progress_q = queue.Queue()
+        self.ipc_q = ipc_q
         self.worker_thread = None
         self.stop_evt = threading.Event()
         self.done_evt = threading.Event()
         self.running = False
 
         self._build_ui()
+        if initial_sources:
+            self.add_sources(initial_sources)
         self._poll_queues()
 
     def _build_ui(self):
@@ -234,19 +303,32 @@ class DownscalerApp(tk.Tk):
         )
         if not paths:
             return
-        cur = self.source_var.get().strip()
-        merged = cur + (";" if cur else "") + ";".join(paths) if cur else ";".join(paths)
-        self.source_var.set(merged)
-        self._sync_launch_state()
+        self.add_sources(paths)
 
     def browse_folder(self):
         d = filedialog.askdirectory(title="Sélectionner un dossier (récursif)")
         if not d:
             return
-        cur = self.source_var.get().strip()
-        merged = cur + (";" if cur else "") + d if cur else d
-        self.source_var.set(merged)
+        self.add_sources([d])
+
+    def add_sources(self, paths):
+        cur = [p.strip() for p in self.source_var.get().split(";") if p.strip()]
+        known = {os.path.normcase(os.path.abspath(p)) for p in cur}
+        for p in paths:
+            p = str(p).strip()
+            key = os.path.normcase(os.path.abspath(p))
+            if p and key not in known:
+                known.add(key)
+                cur.append(p)
+        self.source_var.set(";".join(cur))
         self._sync_launch_state()
+
+    def bring_to_front(self):
+        self.deiconify()
+        self.lift()
+        self.attributes("-topmost", True)
+        self.after(200, lambda: self.attributes("-topmost", False))
+        self.focus_force()
 
     def _append_log(self, line, tag=None):
         self.log.configure(state="normal")
@@ -380,8 +462,29 @@ class DownscalerApp(tk.Tk):
         except queue.Empty:
             pass
 
+        if self.ipc_q is not None:
+            try:
+                while True:
+                    self.add_sources(self.ipc_q.get_nowait())
+                    self.bring_to_front()
+            except queue.Empty:
+                pass
+
         self.after(80, self._poll_queues)
 
 
+def main():
+    args = sys.argv[1:]
+    ipc_q = queue.Queue()
+    if not start_ipc_server(ipc_q):
+        ipc_q = None
+        if args and send_to_running_instance(args):
+            return
+    app = DownscalerApp(initial_sources=args, ipc_q=ipc_q)
+    if args:
+        app.after(100, app.bring_to_front)
+    app.mainloop()
+
+
 if __name__ == "__main__":
-    DownscalerApp().mainloop()
+    main()
