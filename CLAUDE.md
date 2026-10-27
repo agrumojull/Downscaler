@@ -24,7 +24,7 @@ Les chemins passés en argument (fichiers ou dossiers) sont préremplis dans « 
 - Seules les images **carrées** sont traitées, les autres sont ignorées avec une erreur dans le log.
 - Pour chaque résolution cochée : déjà à la bonne taille → skip ; plus petite que la cible → skip (jamais d'agrandissement).
 - Sortie : sous-dossier `_downscaled/` créé à côté de la source, en miroir de l'arborescence, avec le suffixe `_<taille>` (ex. `brique_128.png`).
-- Les fichiers qui finissent déjà par `_512`, `_256`, `_128` ou `_64` sont ignorés en entrée pour ne pas retraiter les sorties.
+- Lors du parcours d'un dossier, les sous-dossiers `_downscaled/` sont ignorés pour ne pas retraiter les sorties. Un fichier choisi explicitement est toujours traité, même s'il s'appelle déjà `xxx_128.png`.
 - Les JPEG sont enregistrés en qualité 95 ; la transparence (RGBA/P) est convertie en RGB.
 - Le traitement tourne dans un thread séparé ; il communique avec l'interface via des `queue.Queue` lues par `_poll_queues` toutes les 80 ms.
 

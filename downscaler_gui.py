@@ -11,7 +11,7 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 from PIL import Image, UnidentifiedImageError
 
 VALID_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
-SUFFIX_RE = None
+OUTPUT_DIR = "_downscaled"
 SUPPORTED_TARGETS = (512, 256, 128, 64)
 
 # Instance unique : le menu contextuel de l'explorateur lance un processus par
@@ -24,21 +24,6 @@ def is_image(path: Path) -> bool:
     return path.suffix.lower() in VALID_EXT
 
 
-def has_downscale_suffix(path: Path) -> bool:
-    global SUFFIX_RE
-    if SUFFIX_RE is None:
-        import re
-
-        SUFFIX_RE = re.compile(r"_(\d+)$")
-    m = SUFFIX_RE.search(path.stem)
-    if not m:
-        return False
-    try:
-        return int(m.group(1)) in SUPPORTED_TARGETS
-    except ValueError:
-        return False
-
-
 def resolve_sources(paths):
     out = []
     seen = set()
@@ -47,15 +32,19 @@ def resolve_sources(paths):
         if not p.exists():
             continue
         if p.is_file():
-            if is_image(p) and not has_downscale_suffix(p):
+            # Un fichier choisi explicitement est toujours traité, même si son
+            # nom finit par _128 ou se trouve dans _downscaled/.
+            if is_image(p):
                 if p.resolve() not in seen:
                     seen.add(p.resolve())
                     out.append(p)
         elif p.is_dir():
-            for root, _dirs, files in os.walk(p):
+            for root, dirs, files in os.walk(p):
+                # Ne pas retraiter les sorties d'un passage précédent.
+                dirs[:] = [d for d in dirs if d != OUTPUT_DIR]
                 for f in files:
                     fpath = Path(root) / f
-                    if is_image(fpath) and not has_downscale_suffix(fpath):
+                    if is_image(fpath):
                         if fpath.resolve() not in seen:
                             seen.add(fpath.resolve())
                             out.append(fpath)
@@ -69,7 +58,7 @@ def mirror_output_path(src: Path, source_root: Path, target: int) -> Path:
         rel = src.relative_to(source_root)
     except ValueError:
         rel = Path(src.name)
-    out_dir = source_root / "_downscaled" / rel.parent
+    out_dir = source_root / OUTPUT_DIR / rel.parent
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir / f"{src.stem}_{target}{src.suffix}"
 
@@ -350,7 +339,7 @@ class DownscalerApp(tk.Tk):
             messagebox.showinfo("Info", "Aucune source sélectionnée.")
             return
         last = paths[0]
-        out_dir = source_root_for(last) / "_downscaled"
+        out_dir = source_root_for(last) / OUTPUT_DIR
         if not out_dir.exists():
             messagebox.showinfo("Info", f"Dossier inexistant :\n{out_dir}")
             return
@@ -365,7 +354,7 @@ class DownscalerApp(tk.Tk):
             messagebox.showinfo("Info", "Aucune source sélectionnée.")
             return
         last = paths[-1]
-        out_dir = source_root_for(last).parent / "_downscaled"
+        out_dir = source_root_for(last).parent / OUTPUT_DIR
         if not out_dir.exists():
             messagebox.showinfo("Info", f"Dossier inexistant :\n{out_dir}")
             return
